@@ -1,0 +1,44 @@
+// KQL to detect login spraying for MFA enablement testing using tools like FindMeAccess
+let Lookback = 1h;
+let MaxGap = 2m;              // max time between sequential attempts
+let MinSeqEvents = 200;        // tune: how many interrupted attempts in the burst
+let MinDistinctApps = 6;      // tune: how many different client apps
+let MinDistinctResources = 6; // tune: how many different resources
+let InterruptedLikeErrorCodes = dynamic([
+  50074, // Strong Authentication is required (often shows as "Interrupted" in UI)
+  50076  // MFA required due to policy/config/location change
+]);
+EntraIdSignInEvents
+| where Timestamp >= ago(Lookback)
+| where isnotempty(IPAddress) and isnotempty(AccountUpn)
+| where ErrorCode in (InterruptedLikeErrorCodes)
+| sort by AccountUpn, IPAddress, Timestamp asc
+| serialize
+| extend PrevUpn = prev(AccountUpn), PrevIP = prev(IPAddress), PrevTs = prev(Timestamp)
+| extend NewBurst = iif(AccountUpn != PrevUpn or IPAddress != PrevIP or (Timestamp - PrevTs) > MaxGap, 1, 0)
+| extend BurstId = row_cumsum(NewBurst)
+| summarize
+    // Anchor a real underlying event for scheduled detections (required columns)
+    arg_max(Timestamp, ReportId),
+    // Your original aggregates (unchanged)
+    FirstSeen = min(Timestamp),
+    LastSeen = max(Timestamp),
+    InterruptedAttempts = count(),
+    DistinctClientIds = dcount(ApplicationId),
+    DistinctResources = dcount(ResourceDisplayName),
+    Resources = make_set(ResourceDisplayName, 15)
+  by IPAddress, AccountUpn, BurstId
+| where InterruptedAttempts >= MinSeqEvents
+| where DistinctClientIds >= MinDistinctApps and DistinctResources >= MinDistinctResources
+| project
+    Timestamp,
+    ReportId,
+    FirstSeen,
+    LastSeen,
+    IPAddress,
+    AccountUpn,
+    InterruptedAttempts,
+    DistinctClientIds,
+    DistinctResources,
+    Resources
+| order by InterruptedAttempts desc
