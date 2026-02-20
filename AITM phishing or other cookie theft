@@ -1,0 +1,83 @@
+// AiTM-oriented session hijack hunting for Microsoft 365 Advanced Hunting.
+// Looks for sessions first observed during OfficeHome browser sign-in, then reused in other apps
+// from a different location (not just different country) and different IP within a short window.
+let lookback = 7d;
+let shortWindow = 30m;
+let officeHomeAppId = "4765445b-32c6-49b0-83e6-1d93765276ca";
+let OfficeHomeSessionStarts =
+    EntraIdSignInEvents
+    | where Timestamp >= ago(lookback)
+    | where ErrorCode == 0
+    | where ApplicationId == officeHomeAppId
+    | where ClientAppUsed == "Browser"
+    | where LogonType has "interactiveUser"
+    | where isnotempty(SessionId) and isnotempty(IPAddress)
+    | summarize arg_min(Timestamp, *) by SessionId, AccountObjectId
+    | project
+        SessionId,
+        AccountObjectId,
+        StartTimestamp = Timestamp,
+        AccountUpn,
+        AccountDisplayName,
+        StartApplication = Application,
+        StartApplicationId = ApplicationId,
+        StartIP = IPAddress,
+        StartCountry = Country,
+        StartState = State,
+        StartCity = City,
+        StartDeviceName = DeviceName,
+        StartUserAgent = UserAgent;
+EntraIdSignInEvents
+| where Timestamp >= ago(lookback)
+| where ApplicationId != officeHomeAppId
+| where ClientAppUsed == "Browser"
+| where isnotempty(SessionId) and isnotempty(IPAddress)
+| project
+    ReuseTimestamp = Timestamp,
+    SessionId,
+    AccountObjectId,
+    ReuseApplication = Application,
+    ReuseApplicationId = ApplicationId,
+    ReuseIP = IPAddress,
+    ReuseCountry = Country,
+    ReuseState = State,
+    ReuseCity = City,
+    ReuseDeviceName = DeviceName,
+    ReuseUserAgent = UserAgent,
+    ErrorCode,
+    RiskLevelDuringSignIn,
+    RiskEventTypes
+| join kind=inner OfficeHomeSessionStarts on SessionId, AccountObjectId
+| where ReuseTimestamp > StartTimestamp
+| where ReuseTimestamp - StartTimestamp <= shortWindow
+| extend StartLocation = strcat(tolower(coalesce(StartCountry, "")), "|", tolower(coalesce(StartState, "")), "|", tolower(coalesce(StartCity, "")))
+| extend ReuseLocation = strcat(tolower(coalesce(ReuseCountry, "")), "|", tolower(coalesce(ReuseState, "")), "|", tolower(coalesce(ReuseCity, "")))
+| where ReuseIP != StartIP
+| where ReuseLocation != StartLocation
+| extend TimeDelta = ReuseTimestamp - StartTimestamp
+| project
+    ReuseTimestamp,
+    StartTimestamp,
+    TimeDelta,
+    AccountUpn,
+    AccountDisplayName,
+    AccountObjectId,
+    SessionId,
+    StartApplication,
+    ReuseApplication,
+    StartIP,
+    ReuseIP,
+    StartCountry,
+    StartState,
+    StartCity,
+    ReuseCountry,
+    ReuseState,
+    ReuseCity,
+    StartDeviceName,
+    ReuseDeviceName,
+    StartUserAgent,
+    ReuseUserAgent,
+    ErrorCode,
+    RiskLevelDuringSignIn,
+    RiskEventTypes
+| order by ReuseTimestamp desc
