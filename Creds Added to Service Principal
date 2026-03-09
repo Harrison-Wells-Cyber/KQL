@@ -1,0 +1,23 @@
+// Show Entra "Update application - Certificates and secrets management" events,
+// including when it happened, who performed it, and which service principal/app was modified.
+// Detects the addition of credentials to a service principal for persistence or lateral movement.
+// Requires Defender for Cloud
+let Lookback = 2h;
+CloudAppEvents
+| where Timestamp >= ago(Lookback)
+| where tostring(column_ifexists("ActionType", "")) has "Update application"
+| where tostring(column_ifexists("ActionType", "")) has "Certificates and secrets management"
+| extend Raw = parse_json(tostring(column_ifexists("RawEventData", "{}")))
+| extend ModifiedServicePrincipal = tostring(coalesce(
+    column_ifexists("ObjectName", ""),
+    Raw.Target[0].ID,
+    Raw.Target[0].Name,
+    Raw.Target
+))
+| project
+    Timestamp,
+    ReportId = tostring(column_ifexists("ReportId", "")),
+    Actor = tostring(column_ifexists("AccountDisplayName", "")),
+    ModifiedServicePrincipal,
+    ActionType = tostring(column_ifexists("ActionType", ""))
+| order by Timestamp desc
