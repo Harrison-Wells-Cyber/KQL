@@ -1,0 +1,24 @@
+// Alert on logins from command line tools if that is nt a common workflow in your environment.
+let Lookback = 2h;
+let TargetApps = dynamic([
+  "Microsoft Azure CLI",
+  "Microsoft Azure PowerShell",
+  "Azure Active Directory Powershell",
+  "Microsoft Graph Command Line Tools"
+]);
+EntraIdSignInEvents
+| where Timestamp >= ago(Lookback)
+| where Application in~ (TargetApps)
+| where toint(ErrorCode) == 0
+| project
+    Timestamp,
+    ReportId,
+    AccountObjectId,
+    AccountUpn,
+    Application,
+    IPAddress,
+    UserAgent,
+    AuthenticationRequirement,
+    ConditionalAccessStatus,
+    ErrorCode
+| order by Timestamp desc
