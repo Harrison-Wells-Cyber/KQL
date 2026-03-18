@@ -1,0 +1,42 @@
+let UniqueRequestThreshold = 1000; // might need tuned to work for your org
+let ResourceThreshold = 4;
+let ReconResources = dynamic(["organization","groups","devices","applications","users","rolemanagement","serviceprincipals"]);
+let BaseEvents =
+GraphAPIAuditEvents
+| where Timestamp >= ago(2h)
+| where RequestMethod == "GET"
+| where ResponseStatusCode == 200
+| where isnotempty(AccountObjectId)
+| where isnotempty(ReportId)
+| extend ParsedUri = tostring(parse_url(RequestUri).Path)
+| extend GraphAPIPath = tolower(replace_string(ParsedUri, "//", "/"))
+| extend GraphAPIResource = tostring(split(GraphAPIPath, "/")[2])
+| where GraphAPIResource in (ReconResources)
+| extend TimeBucket = bin(Timestamp, 1h);
+let Agg =
+BaseEvents
+| summarize
+    UniqueRequests = dcount(ClientRequestId),
+    Requests = make_set(RequestUri, 1000),
+    Paths = make_set(GraphAPIPath, 1000),
+    Resources = make_set(GraphAPIResource, 50),
+    UniqueResourceCount = dcount(GraphAPIResource)
+  by AccountObjectId, TimeBucket
+| where UniqueRequests >= UniqueRequestThreshold
+  and UniqueResourceCount >= ResourceThreshold;
+let AnchorEvent =
+BaseEvents
+| summarize arg_max(Timestamp, ReportId) by AccountObjectId, TimeBucket;
+Agg
+| join kind=inner AnchorEvent on AccountObjectId, TimeBucket
+| project
+    Timestamp,
+    ReportId,
+    AccountObjectId,
+    TimeBucket,
+    UniqueRequests,
+    UniqueResourceCount,
+    Resources,
+    Paths,
+    Requests
+| order by TimeBucket desc
